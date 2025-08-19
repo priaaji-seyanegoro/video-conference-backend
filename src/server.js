@@ -6,15 +6,30 @@ const { v4: uuidv4 } = require('uuid');
 const roomManager = require('./services/RoomManager');
 const webRTCManager = require('./services/WebRTCManager');
 
-// Import handlers
+// Import handlers and middleware
 const { handleSocketConnection } = require('./handlers/socketHandler');
+const { helmet, apiLimiter, roomCreationLimiter, validateRoomData } = require('./middleware/security');
 const logger = require('./utils/logger');
 
 const app = express();
 const server = http.createServer(app);
 
-// Middleware
-app.use(express.json());
+// Security middleware
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      connectSrc: ["'self'", "wss:", "ws:"],
+      mediaSrc: ["'self'", "blob:"],
+    },
+  },
+}));
+
+// Rate limiting
+app.use('/api/', apiLimiter);
+
+// Basic middleware
+app.use(express.json({ limit: '10mb' }));
 app.use(cors({
   origin: process.env.FRONTEND_URL || "http://localhost:3000",
   methods: ["GET", "POST"],
@@ -27,7 +42,9 @@ const io = socketIo(server, {
     origin: process.env.FRONTEND_URL || "http://localhost:3000",
     methods: ["GET", "POST"],
     credentials: true
-  }
+  },
+  pingTimeout: 60000,
+  pingInterval: 25000
 });
 
 // Basic routes
@@ -35,28 +52,46 @@ app.get('/', (req, res) => {
   res.json({ 
     message: 'Video Conference Backend API',
     status: 'running',
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
+    version: '1.0.0'
   });
 });
 
 app.get('/health', (req, res) => {
-  res.json({ status: 'healthy', uptime: process.uptime() });
+  res.json({ 
+    status: 'healthy', 
+    uptime: process.uptime(),
+    memory: process.memoryUsage(),
+    timestamp: new Date().toISOString()
+  });
 });
 
-// Enhanced room creation endpoint
-app.post('/api/rooms', (req, res) => {
+// Enhanced room creation endpoint with security
+app.post('/api/rooms', roomCreationLimiter, validateRoomData, (req, res) => {
   try {
     const { createdBy, settings } = req.body;
     const room = roomManager.createRoom(createdBy, settings);
     
-    res.json({
-      roomId: room.roomId,
-      message: 'Room created successfully',
-      roomInfo: room.getRoomInfo()
+    logger.info(`Room created via API: ${room.roomId} by ${createdBy || 'anonymous'}`);
+    
+    res.status(201).json({
+      success: true,
+      room: {
+        roomId: room.roomId,
+        createdAt: room.createdAt,
+        maxUsers: room.maxUsers,
+        settings: {
+          allowScreenShare: room.settings.allowScreenShare,
+          allowChat: room.settings.allowChat,
+          requirePassword: room.settings.requirePassword,
+          recordingEnabled: room.settings.recordingEnabled
+        }
+      }
     });
   } catch (error) {
-    logger.error('Failed to create room:', error.message);
+    logger.error(`Failed to create room: ${error.message}`);
     res.status(500).json({
+      success: false,
       error: 'Failed to create room',
       message: error.message
     });

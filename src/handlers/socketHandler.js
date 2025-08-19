@@ -6,8 +6,30 @@ function handleSocketConnection(io, socket) {
   logger.info(`New client connected: ${socket.id}`);
 
   // Join room with WebRTC initialization
-  socket.on('join-room', async (roomId, userId, userInfo, password) => {
+  // Ganti line 8-15:
+  socket.on('join-room', async (data) => {
+    console.log('Raw join-room data:', JSON.stringify(data, null, 2));
+    console.log('Data type:', typeof data);
     try {
+      console.log('Received join-room data:', data); // Debug log
+      
+      const { roomId, userName, password } = data;
+      
+      if (!roomId || !userName) {
+        throw new Error('Missing required fields: roomId or userName');
+      }
+      
+      const userId = socket.id; // Use socket.id as userId
+      
+      const userInfo = {
+        name: userName,
+        isAudioEnabled: false,
+        isVideoEnabled: false,
+        isScreenSharing: false,
+        isHost: false,
+        isHandRaised: false
+      };
+  
       const { room, user } = roomManager.joinRoom(roomId, userId, {
         ...userInfo,
         socketId: socket.id
@@ -246,6 +268,230 @@ function handleSocketConnection(io, socket) {
         quality: data.quality,
         stats: data.stats
       });
+    }
+  });
+
+  // Chat functionality
+  socket.on('send-message', (messageData) => {
+    if (socket.userId && socket.roomId) {
+      const room = roomManager.getRoom(socket.roomId);
+      if (room) {
+        const user = room.users.get(socket.userId);
+        if (user) {
+          const message = {
+            id: require('uuid').v4(),
+            userId: socket.userId,
+            userName: user.name,
+            message: messageData.message,
+            timestamp: new Date(),
+            type: messageData.type || 'text' // text, file, emoji
+          };
+          
+          // Broadcast message to all users in room
+          io.to(socket.roomId).emit('new-message', message);
+          
+          logger.info(`Message sent in room ${socket.roomId} by ${socket.userId}`);
+        }
+      }
+    }
+  });
+
+  // File sharing
+  socket.on('share-file', (fileData) => {
+    if (socket.userId && socket.roomId) {
+      const room = roomManager.getRoom(socket.roomId);
+      if (room) {
+        const user = room.users.get(socket.userId);
+        if (user) {
+          const fileMessage = {
+            id: require('uuid').v4(),
+            userId: socket.userId,
+            userName: user.name,
+            fileName: fileData.fileName,
+            fileSize: fileData.fileSize,
+            fileType: fileData.fileType,
+            fileUrl: fileData.fileUrl,
+            timestamp: new Date(),
+            type: 'file'
+          };
+          
+          // Broadcast file to all users in room
+          io.to(socket.roomId).emit('new-file', fileMessage);
+          
+          logger.info(`File shared in room ${socket.roomId} by ${socket.userId}: ${fileData.fileName}`);
+        }
+      }
+    }
+  });
+
+  // Screen sharing with stream management
+  socket.on('start-screen-share', (streamData) => {
+    if (socket.userId && socket.roomId) {
+      const user = roomManager.updateUserMedia(socket.userId, 'screen', true);
+      const mediaState = webRTCManager.updateMediaState(
+        socket.roomId, 
+        socket.userId, 
+        'screen', 
+        true
+      );
+      
+      if (user && mediaState) {
+        socket.to(socket.roomId).emit('user-started-screen-share', {
+          userId: socket.userId,
+          userName: user.name,
+          streamId: streamData.streamId,
+          mediaState,
+          user
+        });
+        
+        logger.info(`Screen sharing started by ${socket.userId} in room ${socket.roomId}`);
+      }
+    }
+  });
+
+  socket.on('stop-screen-share', () => {
+    if (socket.userId && socket.roomId) {
+      const user = roomManager.updateUserMedia(socket.userId, 'screen', false);
+      const mediaState = webRTCManager.updateMediaState(
+        socket.roomId, 
+        socket.userId, 
+        'screen', 
+        false
+      );
+      
+      if (user && mediaState) {
+        socket.to(socket.roomId).emit('user-stopped-screen-share', {
+          userId: socket.userId,
+          userName: user.name,
+          mediaState,
+          user
+        });
+        
+        logger.info(`Screen sharing stopped by ${socket.userId} in room ${socket.roomId}`);
+      }
+    }
+  });
+
+  // Recording functionality
+  socket.on('start-recording', () => {
+    if (socket.userId && socket.roomId) {
+      const room = roomManager.getRoom(socket.roomId);
+      if (room) {
+        const user = room.users.get(socket.userId);
+        if (user && user.role === 'host') {
+          room.settings.recordingEnabled = true;
+          
+          socket.to(socket.roomId).emit('recording-started', {
+            startedBy: socket.userId,
+            userName: user.name,
+            timestamp: new Date()
+          });
+          
+          logger.info(`Recording started in room ${socket.roomId} by ${socket.userId}`);
+        } else {
+          socket.emit('error', {
+            type: 'recording-permission-denied',
+            message: 'Only host can start recording'
+          });
+        }
+      }
+    }
+  });
+
+  socket.on('stop-recording', () => {
+    if (socket.userId && socket.roomId) {
+      const room = roomManager.getRoom(socket.roomId);
+      if (room) {
+        const user = room.users.get(socket.userId);
+        if (user && user.role === 'host') {
+          room.settings.recordingEnabled = false;
+          
+          socket.to(socket.roomId).emit('recording-stopped', {
+            stoppedBy: socket.userId,
+            userName: user.name,
+            timestamp: new Date()
+          });
+          
+          logger.info(`Recording stopped in room ${socket.roomId} by ${socket.userId}`);
+        }
+      }
+    }
+  });
+
+  // Participant management (host only)
+  socket.on('mute-participant', (targetUserId) => {
+    if (socket.userId && socket.roomId) {
+      const room = roomManager.getRoom(socket.roomId);
+      if (room) {
+        const host = room.users.get(socket.userId);
+        const targetUser = room.users.get(targetUserId);
+        
+        if (host && host.role === 'host' && targetUser) {
+          // Force mute target user
+          roomManager.updateUserMedia(targetUserId, 'audio', false);
+          webRTCManager.updateMediaState(socket.roomId, targetUserId, 'audio', false);
+          
+          io.to(socket.roomId).emit('participant-muted', {
+            targetUserId,
+            targetUserName: targetUser.name,
+            mutedBy: socket.userId,
+            mutedByName: host.name
+          });
+          
+          logger.info(`User ${targetUserId} muted by host ${socket.userId} in room ${socket.roomId}`);
+        }
+      }
+    }
+  });
+
+  socket.on('remove-participant', (targetUserId) => {
+    if (socket.userId && socket.roomId) {
+      const room = roomManager.getRoom(socket.roomId);
+      if (room) {
+        const host = room.users.get(socket.userId);
+        const targetUser = room.users.get(targetUserId);
+        
+        if (host && host.role === 'host' && targetUser) {
+          // Find target socket and disconnect
+          const targetSocket = Array.from(io.sockets.sockets.values())
+            .find(s => s.userId === targetUserId && s.roomId === socket.roomId);
+          
+          if (targetSocket) {
+            targetSocket.emit('removed-from-room', {
+              removedBy: socket.userId,
+              removedByName: host.name,
+              reason: 'Removed by host'
+            });
+            
+            handleUserLeave(targetSocket, io);
+            targetSocket.disconnect();
+            
+            logger.info(`User ${targetUserId} removed by host ${socket.userId} from room ${socket.roomId}`);
+          }
+        }
+      }
+    }
+  });
+
+  // Raise hand functionality
+  socket.on('raise-hand', (raised) => {
+    if (socket.userId && socket.roomId) {
+      const room = roomManager.getRoom(socket.roomId);
+      if (room) {
+        const user = room.users.get(socket.userId);
+        if (user) {
+          user.handRaised = raised;
+          
+          socket.to(socket.roomId).emit('hand-raised', {
+            userId: socket.userId,
+            userName: user.name,
+            raised,
+            timestamp: new Date()
+          });
+          
+          logger.info(`Hand ${raised ? 'raised' : 'lowered'} by ${socket.userId} in room ${socket.roomId}`);
+        }
+      }
     }
   });
 
