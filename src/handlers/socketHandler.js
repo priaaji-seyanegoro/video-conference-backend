@@ -239,6 +239,14 @@ function handleSocketConnection(io, socket) {
   });
 
   socket.on('toggle-screen-share', (enabled) => {
+    // Tambahkan logging detail untuk debugging
+    console.log('=== SCREEN SHARE DEBUG ===');
+    console.log('User ID:', socket.userId);
+    console.log('Room ID:', socket.roomId);
+    console.log('Enabled value:', enabled);
+    console.log('Enabled type:', typeof enabled);
+    console.log('Enabled stringified:', JSON.stringify(enabled));
+    
     if (socket.userId && socket.roomId) {
       const user = roomManager.updateUserMedia(socket.userId, 'screen', enabled);
       const mediaState = webRTCManager.updateMediaState(
@@ -248,16 +256,41 @@ function handleSocketConnection(io, socket) {
         enabled
       );
       
+      // Tambahkan logging untuk hasil update
+      console.log('Updated user:', user ? {
+        name: user.name,
+        isScreenSharing: user.isScreenSharing,
+        isAudioEnabled: user.isAudioEnabled,
+        isVideoEnabled: user.isVideoEnabled
+      } : null);
+      console.log('Updated mediaState:', mediaState);
+      
       if (user && mediaState) {
-        socket.to(socket.roomId).emit('user-media-changed', {
+        const eventData = {
           userId: socket.userId,
           mediaType: 'screen',
           enabled,
           mediaState,
           user
-        });
+        };
+        
+        console.log('Emitting user-media-changed:', JSON.stringify(eventData, null, 2));
+        
+        socket.to(socket.roomId).emit('user-media-changed', eventData);
+        
+        // Log untuk konfirmasi
+        logger.info(`Screen sharing ${enabled ? 'STARTED' : 'STOPPED'} by ${socket.userId} (${user.name}) in room ${socket.roomId}`);
+      } else {
+        console.log('ERROR: Failed to update user or mediaState');
+        console.log('User result:', user);
+        console.log('MediaState result:', mediaState);
       }
+    } else {
+      console.log('ERROR: Missing userId or roomId');
+      console.log('socket.userId:', socket.userId);
+      console.log('socket.roomId:', socket.roomId);
     }
+    console.log('=== END SCREEN SHARE DEBUG ===');
   });
 
   // Connection quality monitoring

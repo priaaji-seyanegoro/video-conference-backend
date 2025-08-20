@@ -130,11 +130,17 @@ class WebRTCManager {
     const roomConnections = this.connections.get(roomId);
     if (roomConnections && roomConnections.has(userId)) {
       const user = roomConnections.get(userId);
+      const previousState = { ...user.mediaState };
       user.mediaState[mediaType] = enabled;
       
-      logger.info(`Media state updated for ${userId}: ${mediaType} = ${enabled}`);
+      // Logging yang lebih detail
+      logger.info(`Media state updated for ${userId}: ${mediaType} changed from ${previousState[mediaType]} to ${enabled}`);
+      logger.info(`Full media state for ${userId}:`, JSON.stringify(user.mediaState, null, 2));
+      
       return user.mediaState;
     }
+    
+    logger.error(`Failed to update media state for ${userId} in room ${roomId}: User not found`);
     return null;
   }
 
